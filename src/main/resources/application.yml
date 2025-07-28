@@ -1,0 +1,42 @@
+spring:
+  application:
+    name:
+      berrydrive
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driverClassName: ${CONFIG_DATASOURCE_DRIVER:org.postgresql.Driver}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_TIMEOUT:60000}
+  jpa:
+    hibernate:
+      ddl-auto: ${CONFIG_JPA_DDL:validate} # PROD -> none/validate, LOCAL -> update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+rsa:
+  private-key: classpath:keys/private.pem
+  public-key: classpath:keys/public.pem
+jwt:
+  access-token-ttl: 900000         # 15 * 60 * 1000 (15 минут)
+  refresh-token-ttl: 2592000000    # 30 * 24 * 60 * 60 * 1000 (30 дней)
+  refresh-cookie-ttl: 2592000 # сек (30 дней)
+
+cors:
+  allowed-origins:
+    - {ALLOWED_ORIGINS:*}
+  allowed-methods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+  allowed-headers:
+    - Authorization
+    - Content-Type
+  allow-credentials: false

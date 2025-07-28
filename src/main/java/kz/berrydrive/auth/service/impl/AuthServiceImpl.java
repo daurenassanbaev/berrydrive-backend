@@ -1,0 +1,159 @@
+package kz.berrydrive.auth.service.impl;
+
+import kz.berrydrive.auth.constant.RedisConstants;
+import kz.berrydrive.auth.dto.request.RegisterRequestDto;
+import kz.berrydrive.auth.dto.request.SignInRequestDto;
+import kz.berrydrive.auth.dto.response.AuthResponseDto;
+import kz.berrydrive.auth.enums.TokenType;
+import kz.berrydrive.auth.exception.UnauthorizedException;
+import kz.berrydrive.auth.service.AuthService;
+import kz.berrydrive.auth.service.RedisService;
+import kz.berrydrive.auth.service.jwt.JwtService;
+import kz.berrydrive.common.config.properties.JwtProperties;
+import kz.berrydrive.user.entity.User;
+import kz.berrydrive.user.service.UserService;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AuthServiceImpl implements AuthService {
+
+    private final UserService userService;
+    private final RedisService redisService;
+    private final AuthenticationManager authenticationManager;
+    private final JwtService jwtService;
+    private final JwtProperties jwtProperties;
+    private final PasswordEncoder passwordEncoder;
+
+    private static final String BEARER_PREFIX = "Bearer ";
+
+    @Override
+    public AuthResponseDto signIn(SignInRequestDto signInRequestDto, HttpServletResponse response) {
+        Authentication auth = authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(signInRequestDto.getEmail(), signInRequestDto.getPassword())
+        );
+        User user = (User) auth.getPrincipal();
+
+        String accessToken = jwtService.generateToken(user.getEmail(), TokenType.ACCESS_TOKEN);
+        String refreshToken = jwtService.generateToken(user.getEmail(), TokenType.REFRESH_TOKEN);
+
+        Cookie refreshTokenCookie = buildRefreshTokenCookie(refreshToken);
+        response.addCookie(refreshTokenCookie);
+
+        return buildAuthResponseDto(accessToken);
+    }
+
+    @Override
+    public AuthResponseDto register(RegisterRequestDto registerRequestDto, HttpServletResponse response) {
+        User user = buildUser(registerRequestDto);
+        userService.createUser(user);
+
+        return signIn(new SignInRequestDto(user.getEmail(), registerRequestDto.getPassword()), response);
+    }
+
+    @Override
+    public AuthResponseDto refreshToken(HttpServletRequest request, HttpServletResponse response) {
+        Cookie refreshCookie = extractRefreshTokenCookie(request);
+        String refreshToken = refreshCookie.getValue();
+
+        if (redisService.hasToken(refreshToken) || !jwtService.isTokenValid(refreshToken)) {
+            throw new UnauthorizedException("Invalid or blacklisted refresh token");
+        }
+
+        invalidateToken(refreshToken);
+
+        return rotateTokens(refreshToken, response);
+    }
+
+    @Override
+    public void logout(HttpServletRequest request, HttpServletResponse response) {
+        String accessToken = request.getHeader("Authorization");
+
+        if (accessToken != null && accessToken.startsWith(BEARER_PREFIX)) {
+            invalidateToken(accessToken.substring(7));
+        }
+
+        Cookie refreshTokenCookie = extractRefreshTokenCookie(request);
+
+        invalidateToken(refreshTokenCookie.getValue());
+
+        refreshTokenCookie.setMaxAge(0);
+        refreshTokenCookie.setPath("/");
+
+        response.addCookie(refreshTokenCookie);
+    }
+
+    private AuthResponseDto rotateTokens(String refreshToken, HttpServletResponse response) {
+        String username = jwtService.extractSubject(refreshToken);
+        String accessToken = jwtService.generateToken(username, TokenType.ACCESS_TOKEN);
+        String newRefreshToken = jwtService.generateToken(username, TokenType.REFRESH_TOKEN);
+
+        Cookie newRefreshCookie = buildRefreshTokenCookie(newRefreshToken);
+        response.addCookie(newRefreshCookie);
+
+        return buildAuthResponseDto(accessToken);
+    }
+
+    private void invalidateToken(String token) {
+        try {
+            long ttl = (jwtService.extractExpiration(token).getTime() - System.currentTimeMillis()) / 1000;
+            log.info("Expiration time in seconds : {}", ttl);
+            if (ttl > 0) {
+                redisService.setTokenWithTTL(token, RedisConstants.BLACKLISTED, ttl, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            log.warn("Cannot invalidate token. Possibly already expired or malformed: {}", e.getMessage());
+        }
+    }
+
+    private User buildUser(RegisterRequestDto registerRequestDto) {
+        return User.builder()
+                .email(registerRequestDto.getEmail())
+                .password(passwordEncoder.encode(registerRequestDto.getPassword()))
+                .isActive(true)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+    }
+
+    private AuthResponseDto buildAuthResponseDto(String accessToken) {
+        return AuthResponseDto.builder()
+                .accessToken(accessToken)
+                .tokenType(TokenType.ACCESS_TOKEN.name())
+                .expiresIn(jwtProperties.getAccessTokenTtl())
+                .build();
+    }
+
+    private Cookie buildRefreshTokenCookie(String refreshToken) {
+        Cookie refreshTokenCookie = new Cookie(TokenType.REFRESH_TOKEN.name(), refreshToken);
+        refreshTokenCookie.setMaxAge(jwtProperties.getRefreshCookieTtl());
+        refreshTokenCookie.setHttpOnly(true);
+        refreshTokenCookie.setPath("/");
+        return refreshTokenCookie;
+    }
+
+    private Cookie extractRefreshTokenCookie(HttpServletRequest request) {
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
+            throw new UnauthorizedException("Refresh token is missing");
+        }
+        return Arrays.stream(cookies)
+                .filter(cookie -> cookie.getName().equals(TokenType.REFRESH_TOKEN.name()))
+                .findFirst()
+                .orElseThrow(() -> new UnauthorizedException("Refresh token is missing"));
+    }
+}
