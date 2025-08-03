@@ -20,6 +20,10 @@ spring:
     properties:
       hibernate:
         format_sql: true
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
 rsa:
   private-key: classpath:keys/private.pem
   public-key: classpath:keys/public.pem
@@ -27,10 +31,15 @@ jwt:
   access-token-ttl: 900000         # 15 * 60 * 1000 (15 минут)
   refresh-token-ttl: 2592000000    # 30 * 24 * 60 * 60 * 1000 (30 дней)
   refresh-cookie-ttl: 2592000 # сек (30 дней)
+aws:
+  accessKeyId: ${AWS_ACCESS_KEY_ID:}
+  secretKey: ${AWS_SECRET_KEY:}
+  region: ${AWS_REGION:}
+  bucket: ${AWS_S3_BUCKET:}
 
 cors:
   allowed-origins:
-    - {ALLOWED_ORIGINS:*}
+    - ${ALLOWED_ORIGINS:*}
   allowed-methods:
     - GET
     - POST
@@ -40,3 +49,7 @@ cors:
     - Authorization
     - Content-Type
   allow-credentials: false
+server:
+  port: ${SERVER_PORT:8080}
+app:
+  base-url: ${APP_BASE_URL:http://localhost:${server.port}/api/public}
