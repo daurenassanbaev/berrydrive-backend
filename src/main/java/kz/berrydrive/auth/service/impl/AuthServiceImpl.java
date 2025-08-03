@@ -18,8 +18,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -43,26 +45,36 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthResponseDto signIn(SignInRequestDto signInRequestDto, HttpServletResponse response) {
-        Authentication auth = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(signInRequestDto.getEmail(), signInRequestDto.getPassword())
-        );
-        User user = (User) auth.getPrincipal();
+        try {
+            Authentication auth = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(signInRequestDto.getEmail(), signInRequestDto.getPassword())
+            );
+            User user = (User) auth.getPrincipal();
 
-        String accessToken = jwtService.generateToken(user.getEmail(), TokenType.ACCESS_TOKEN);
-        String refreshToken = jwtService.generateToken(user.getEmail(), TokenType.REFRESH_TOKEN);
+            String accessToken = jwtService.generateToken(user.getEmail(), TokenType.ACCESS_TOKEN);
+            String refreshToken = jwtService.generateToken(user.getEmail(), TokenType.REFRESH_TOKEN);
 
-        Cookie refreshTokenCookie = buildRefreshTokenCookie(refreshToken);
-        response.addCookie(refreshTokenCookie);
+            Cookie refreshTokenCookie = buildRefreshTokenCookie(refreshToken);
+            response.addCookie(refreshTokenCookie);
 
-        return buildAuthResponseDto(accessToken);
+            return buildAuthResponseDto(accessToken);
+        } catch (AuthenticationException e) {
+            throw new UnauthorizedException("Invalid email or password");
+        } catch (Exception e) {
+            throw new AuthenticationServiceException("Authentication failed", e);
+        }
+
     }
 
     @Override
     public AuthResponseDto register(RegisterRequestDto registerRequestDto, HttpServletResponse response) {
-        User user = buildUser(registerRequestDto);
-        userService.createUser(user);
-
-        return signIn(new SignInRequestDto(user.getEmail(), registerRequestDto.getPassword()), response);
+        try {
+            User user = buildUser(registerRequestDto);
+            userService.createUser(user);
+            return signIn(new SignInRequestDto(user.getEmail(), registerRequestDto.getPassword()), response);
+        } catch (Exception e) {
+            throw new AuthenticationServiceException("Registration failed", e);
+        }
     }
 
     @Override
@@ -87,14 +99,15 @@ public class AuthServiceImpl implements AuthService {
             invalidateToken(accessToken.substring(7));
         }
 
-        Cookie refreshTokenCookie = extractRefreshTokenCookie(request);
-
-        invalidateToken(refreshTokenCookie.getValue());
-
-        refreshTokenCookie.setMaxAge(0);
-        refreshTokenCookie.setPath("/");
-
-        response.addCookie(refreshTokenCookie);
+        try {
+            Cookie refreshTokenCookie = extractRefreshTokenCookie(request);
+            invalidateToken(refreshTokenCookie.getValue());
+            refreshTokenCookie.setMaxAge(0);
+            refreshTokenCookie.setPath("/");
+            response.addCookie(refreshTokenCookie);
+        } catch (UnauthorizedException e) {
+            log.warn("No refresh token found during logout");
+        }
     }
 
     private AuthResponseDto rotateTokens(String refreshToken, HttpServletResponse response) {
